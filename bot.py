@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 import socks
 import logging
-import asyncio
+import time
 
 # ===== লগিং সেটআপ =====
 logging.basicConfig(
@@ -15,43 +15,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== কনফিগারেশন =====
-TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # আপনার টোকেন দিন
-CHAT_ID = "6881373105"          # আপনার চ্যাট আইডি
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"  # আপনার টোকেন দিন
+CHAT_ID = "YOUR_CHAT_ID"          # আপনার চ্যাট আইডি
 GEMIWALL_URL = "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/"
 
 # ===== Socks5 প্রক্সি সেটিংস =====
-SOCKS5_PROXY = {
-    "proxy_type": socks.SOCKS5,
-    "addr": "niceproxy.io",
-    "port": 17522,
-    "username": "mimi_seYL-country-US-isp-as701_verizon_business-ssid-XjBoEHoVOt",
-    "password": "mimi",
-    "rdns": True
-}
-
-# ===== গ্লোবাল ভেরিয়েবল (সবার উপরে ডিফাইন) =====
-USE_PROXY = True  # গ্লোবাল ভেরিয়েবল ডিফাইন
-
-# ===== Socks5 প্রক্সি সহ সেশন =====
-def create_session():
-    session = requests.Session()
-    if USE_PROXY:
-        proxy_url = f'socks5://{SOCKS5_PROXY["username"]}:{SOCKS5_PROXY["password"]}@{SOCKS5_PROXY["addr"]}:{SOCKS5_PROXY["port"]}'
-        session.proxies = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-        logger.info(f"🌐 Using Socks5 Proxy: {SOCKS5_PROXY['addr']}:{SOCKS5_PROXY['port']}")
-    return session
+USE_PROXY = True
+PROXY_URL = f'socks5://mimi_seYL-country-US-isp-as701_verizon_business-ssid-XjBoEHoVOt:mimi@niceproxy.io:17522'
 
 # ===== প্রক্সি টেস্ট =====
 def test_proxy():
     """Socks5 প্রক্সি টেস্ট"""
-    test_url = "http://ip-api.com/json/"
-    session = create_session()
     try:
         logger.info("🔍 Testing Socks5 Proxy...")
-        response = session.get(test_url, timeout=15)
+        session = requests.Session()
+        session.proxies = {
+            'http': PROXY_URL,
+            'https': PROXY_URL
+        }
+        response = session.get("http://ip-api.com/json/", timeout=15)
         if response.status_code == 200:
             data = response.json()
             logger.info(f"✅ Proxy Working!")
@@ -63,18 +45,23 @@ def test_proxy():
     except Exception as e:
         logger.error(f"❌ Proxy Error: {e}")
         return False
-    finally:
-        session.close()
 
 # ===== অফার ফেচ =====
-async def fetch_offers():
+def fetch_offers_sync():
+    """সিঙ্ক্রোনাস অফার ফেচ"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
     }
     
-    session = create_session()
+    session = requests.Session()
+    if USE_PROXY:
+        session.proxies = {
+            'http': PROXY_URL,
+            'https': PROXY_URL
+        }
+    
     try:
         logger.info(f"🔄 Fetching offers...")
         response = session.get(GEMIWALL_URL, headers=headers, timeout=30)
@@ -148,9 +135,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def new_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Checking new offers...")
-    offers = await fetch_offers()
+    offers = fetch_offers_sync()
     if offers:
-        for offer in offers[:5]:  # প্রথম ৫টি দেখাবে
+        for offer in offers[:5]:
             msg = f"🎯 *{offer.get('name')}*\n💰 Reward: {offer.get('reward')}\n🔗 [Link]({offer.get('link')})"
             await update.message.reply_text(msg, parse_mode="Markdown")
     else:
@@ -158,7 +145,7 @@ async def new_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def all_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 Fetching all offers...")
-    offers = await fetch_offers()
+    offers = fetch_offers_sync()
     if offers:
         for i in range(0, min(len(offers), 10), 5):
             batch = offers[i:i+5]
@@ -176,32 +163,34 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ===== শিডিউল টাস্ক =====
-async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=CHAT_ID, text="⏰ Checking new offers...")
-    offers = await fetch_offers()
-    if offers:
-        for offer in offers[:3]:
-            msg = f"🎯 {offer.get('name')} - 💰 {offer.get('reward')}"
-            await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+# ===== শিডিউল টাস্ক (সিঙ্ক্রোনাস) =====
+def scheduled_check_sync(context):
+    """সিঙ্ক্রোনাস শিডিউল টাস্ক"""
+    try:
+        # context থেকে বট অবজেক্ট নিন
+        bot = context.bot
+        bot.send_message(chat_id=CHAT_ID, text="⏰ Checking new offers...")
+        offers = fetch_offers_sync()
+        if offers:
+            for offer in offers[:3]:
+                msg = f"🎯 {offer.get('name')} - 💰 {offer.get('reward')}"
+                bot.send_message(chat_id=CHAT_ID, text=msg)
+        else:
+            bot.send_message(chat_id=CHAT_ID, text="No new offers found.")
+    except Exception as e:
+        logger.error(f"Schedule error: {e}")
 
 # ===== মেইন ফাংশন =====
 def main():
     """বট শুরু করুন"""
-    global USE_PROXY  # গ্লোবাল ভেরিয়েবল ব্যবহারের জন্য ডিক্লেয়ার
+    logger.info("🚀 Starting GemiWall Bot...")
     
     # প্রক্সি টেস্ট
     if USE_PROXY:
-        if not test_proxy():
-            logger.warning("⚠️ Proxy test failed. Continuing without proxy...")
-            USE_PROXY = False  # এখানে গ্লোবাল ভেরিয়েবল পরিবর্তন
+        test_proxy()
     
-    # Application বিল্ড করুন
-    application = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
+    # Application বিল্ড করুন (সরলীকৃত)
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # হ্যান্ডলার যোগ করুন
     application.add_handler(CommandHandler("start", start))
@@ -209,20 +198,16 @@ def main():
     application.add_handler(CommandHandler("all", all_offers))
     application.add_handler(CommandHandler("status", status))
     
-    # শিডিউলার
+    # শিডিউলার (প্রতি ৩০ মিনিট)
     job_queue = application.job_queue
     if job_queue:
-        # প্রতি ৩০ মিনিটে
-        job_queue.run_repeating(scheduled_check, interval=1800, first=10)
+        job_queue.run_repeating(scheduled_check_sync, interval=1800, first=10)
         logger.info("✅ Scheduler started")
     
-    logger.info("🤖 Bot Started with Socks5 Proxy!")
+    logger.info("🤖 Bot is running!")
     
     # পোলিং স্টার্ট
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message"]
-    )
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
