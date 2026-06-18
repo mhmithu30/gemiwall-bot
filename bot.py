@@ -1,12 +1,11 @@
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram._utils.defaultvalue import DEFAULT_NONE
 import json
 from datetime import datetime
 import socks
-import asyncio
 import logging
+import asyncio
 
 # ===== লগিং সেটআপ =====
 logging.basicConfig(
@@ -16,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== কনফিগারেশন =====
-TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # আপনার টোকেন দিন
-CHAT_ID = "6881373105"          # আপনার চ্যাট আইডি
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"  # আপনার টোকেন দিন
+CHAT_ID = "YOUR_CHAT_ID"          # আপনার চ্যাট আইডি
 GEMIWALL_URL = "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/"
 
 # ===== Socks5 প্রক্সি সেটিংস =====
@@ -30,7 +29,8 @@ SOCKS5_PROXY = {
     "rdns": True
 }
 
-USE_PROXY = True
+# ===== গ্লোবাল ভেরিয়েবল (সবার উপরে ডিফাইন) =====
+USE_PROXY = True  # গ্লোবাল ভেরিয়েবল ডিফাইন
 
 # ===== Socks5 প্রক্সি সহ সেশন =====
 def create_session():
@@ -142,7 +142,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "/new - Check new offers\n"
         "/all - Get all offers\n"
-        "/proxy - Update proxy\n"
         "/status - Bot status",
         parse_mode="Markdown"
     )
@@ -186,17 +185,18 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
             msg = f"🎯 {offer.get('name')} - 💰 {offer.get('reward')}"
             await context.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-# ===== মেইন ফাংশন (সঠিকভাবে কনফিগার করা) =====
+# ===== মেইন ফাংশন =====
 def main():
     """বট শুরু করুন"""
+    global USE_PROXY  # গ্লোবাল ভেরিয়েবল ব্যবহারের জন্য ডিক্লেয়ার
+    
     # প্রক্সি টেস্ট
     if USE_PROXY:
         if not test_proxy():
             logger.warning("⚠️ Proxy test failed. Continuing without proxy...")
-            global USE_PROXY
-            USE_PROXY = False
+            USE_PROXY = False  # এখানে গ্লোবাল ভেরিয়েবল পরিবর্তন
     
-    # Application বিল্ড করুন (সঠিক কনফিগারেশন সহ)
+    # Application বিল্ড করুন
     application = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
@@ -216,7 +216,7 @@ def main():
         job_queue.run_repeating(scheduled_check, interval=1800, first=10)
         logger.info("✅ Scheduler started")
     
-    logger.info("🤖 Bot Started!")
+    logger.info("🤖 Bot Started with Socks5 Proxy!")
     
     # পোলিং স্টার্ট
     application.run_polling(
