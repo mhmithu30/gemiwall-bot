@@ -3,9 +3,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import json
 from datetime import datetime
-import socks
 import logging
-import time
 import asyncio
 
 # ===== লগিং সেটআপ =====
@@ -15,14 +13,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ===== কনফিগারেশন (এখানে আপনার টোকেন ও চ্যাট আইডি দিন) =====
-TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # ← আপনার টোকেন দিন
-CHAT_ID = "6881373105"          # ← আপনার চ্যাট আইডি দিন
+# ===== কনফিগারেশন =====
+TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # আপনার টোকেন দিন
+CHAT_ID = "6881373105"          # আপনার চ্যাট আইডি দিন
 GEMIWALL_URL = "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/"
 
 # ===== Socks5 প্রক্সি সেটিংস =====
 USE_PROXY = True
-PROXY_URL = f'socks5://mimi_seYL-country-US-isp-as701_verizon_business-ssid-XjBoEHoVOt:mimi@niceproxy.io:17522'
+PROXY_URL = 'socks5://mimi_seYL-country-US-isp-as701_verizon_business-ssid-XjBoEHoVOt:mimi@niceproxy.io:17522'
 
 # ===== প্রক্সি টেস্ট =====
 def test_proxy():
@@ -64,7 +62,7 @@ def fetch_offers_sync():
         }
     
     try:
-        logger.info(f"🔄 Fetching offers...")
+        logger.info(f"🔄 Fetching offers from GemiWall...")
         response = session.get(GEMIWALL_URL, headers=headers, timeout=30)
         
         if response.status_code == 200:
@@ -75,7 +73,7 @@ def fetch_offers_sync():
                 logger.info(f"📦 Found {len(offers)} offers")
                 return offers
             except:
-                logger.info("📄 Parsing HTML...")
+                logger.info("📄 Response is HTML, parsing...")
                 return parse_html_offers(response.text)
         else:
             logger.error(f"❌ HTTP Error {response.status_code}")
@@ -92,18 +90,28 @@ def parse_html_offers(html_content):
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'html.parser')
-        offer_elements = soup.find_all('div', class_='offer-item')
+        
+        # বিভিন্ন ক্লাস নাম ট্রাই করুন
+        offer_elements = soup.find_all(['div', 'li'], class_=lambda c: c and ('offer' in c.lower() or 'item' in c.lower()))
+        
+        if not offer_elements:
+            # অন্য সিলেক্টর ট্রাই করুন
+            offer_elements = soup.select('.offer-item, .offer-card, .offer, .item')
+        
         for elem in offer_elements:
-            name = elem.find('div', class_='offer-name')
-            reward = elem.find('div', class_='offer-reward')
-            link = elem.find('a')
+            name_elem = elem.find(['h3', 'h4', 'div', 'span'], class_=lambda c: c and ('name' in c.lower() or 'title' in c.lower()))
+            reward_elem = elem.find(['span', 'div'], class_=lambda c: c and ('reward' in c.lower() or 'price' in c.lower()))
+            link_elem = elem.find('a')
+            
             offer = {
-                'name': name.text.strip() if name else 'Unknown',
-                'reward': reward.text.strip() if reward else 'N/A',
-                'link': link.get('href') if link else '#',
+                'name': name_elem.text.strip() if name_elem else 'Unknown Offer',
+                'reward': reward_elem.text.strip() if reward_elem else 'N/A',
+                'link': link_elem.get('href') if link_elem else '#',
                 'description': 'Offer from GemiWall'
             }
             offers.append(offer)
+        
+        logger.info(f"📦 Found {len(offers)} offers in HTML")
         return offers
     except Exception as e:
         logger.error(f"⚠️ HTML Parse Error: {e}")
@@ -126,54 +134,92 @@ def save_offers(data):
 # ===== টেলিগ্রাম হ্যান্ডলার =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *GemiWall Bot Active*\n"
-        "Commands:\n"
+        "🤖 *GemiWall Scraper Bot*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "🟢 *Active Commands:*\n"
         "/new - Check new offers\n"
         "/all - Get all offers\n"
-        "/status - Bot status",
+        "/status - Bot status\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"📍 Proxy: {'ON' if USE_PROXY else 'OFF'}",
         parse_mode="Markdown"
     )
 
 async def new_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Checking new offers...")
     offers = fetch_offers_sync()
+    
     if offers:
         for offer in offers[:5]:
-            msg = f"🎯 *{offer.get('name')}*\n💰 Reward: {offer.get('reward')}\n🔗 [Link]({offer.get('link')})"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            msg = (
+                f"🎯 *{offer.get('name')}*\n"
+                f"💰 Reward: {offer.get('reward')}\n"
+                f"🔗 [View Offer]({offer.get('link')})"
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
     else:
-        await update.message.reply_text("❌ No offers found.")
+        await update.message.reply_text("❌ No offers found at the moment.")
 
 async def all_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 Fetching all offers...")
     offers = fetch_offers_sync()
+    
     if offers:
-        for i in range(0, min(len(offers), 10), 5):
+        # প্রতি মেসেজে ৫টি করে অফার
+        for i in range(0, min(len(offers), 15), 5):
             batch = offers[i:i+5]
-            msg = "\n\n".join([f"🎯 {o.get('name')} - 💰 {o.get('reward')}" for o in batch])
-            await update.message.reply_text(msg)
+            msg = "*📋 Offers List*\n\n" + "\n\n".join([
+                f"🎯 {o.get('name')}\n💰 {o.get('reward')}" 
+                for o in batch
+            ])
+            await update.message.reply_text(msg, parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ No offers available.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    proxy_status = "ON" if USE_PROXY else "OFF"
+    proxy_status = "🟢 ON" if USE_PROXY else "🔴 OFF"
     await update.message.reply_text(
         f"📊 *Bot Status*\n"
-        f"Proxy: {proxy_status}\n"
-        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔄 Status: Running\n"
+        f"🌐 Proxy: {proxy_status}\n"
+        f"📍 IP: 68.132.64.59 (USA)\n"
+        f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"📦 Offers: Check /new or /all",
         parse_mode="Markdown"
     )
 
 # ===== শিডিউল টাস্ক =====
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    """শিডিউল অফার চেক"""
+    """প্রতি ৩০ মিনিটে অফার চেক"""
     try:
-        await context.bot.send_message(chat_id=CHAT_ID, text="⏰ Checking new offers...")
+        await context.bot.send_message(
+            chat_id=CHAT_ID, 
+            text="⏰ *Scheduled Check*\nChecking for new offers..."
+        )
         offers = fetch_offers_sync()
+        
         if offers:
-            for offer in offers[:3]:
-                msg = f"🎯 {offer.get('name')} - 💰 {offer.get('reward')}"
-                await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+            # চেক করুন নতুন অফার আছে কিনা
+            data = load_offers()
+            new_offers_list = []
+            
+            for offer in offers:
+                offer_id = offer.get('name', '') + offer.get('reward', '')
+                if offer_id not in data.get('all_offers', []):
+                    new_offers_list.append(offer)
+                    data['all_offers'].append(offer_id)
+            
+            if new_offers_list:
+                save_offers(data)
+                for offer in new_offers_list[:3]:
+                    msg = f"🆕 *New Offer*\n🎯 {offer.get('name')}\n💰 {offer.get('reward')}"
+                    await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+            else:
+                await context.bot.send_message(chat_id=CHAT_ID, text="✅ No new offers found.")
+        else:
+            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch offers.")
+            
     except Exception as e:
         logger.error(f"Schedule error: {e}")
 
@@ -192,30 +238,33 @@ def main():
         test_proxy()
     
     try:
-        # Application বিল্ড করুন
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        # Application তৈরি
+        application = (
+            Application.builder()
+            .token(TELEGRAM_TOKEN)
+            .build()
+        )
         
-        # হ্যান্ডলার যোগ করুন
+        # হ্যান্ডলার যোগ
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("new", new_offers))
         application.add_handler(CommandHandler("all", all_offers))
         application.add_handler(CommandHandler("status", status))
         
         # শিডিউলার (প্রতি ৩০ মিনিট)
-        job_queue = application.job_queue
-        if job_queue:
-            job_queue.run_repeating(scheduled_check, interval=1800, first=10)
-            logger.info("✅ Scheduler started")
+        if application.job_queue:
+            application.job_queue.run_repeating(scheduled_check, interval=1800, first=10)
+            logger.info("✅ Scheduler started (30 min interval)")
         else:
             logger.warning("⚠️ JobQueue not available")
         
         logger.info("🤖 Bot is running!")
-        
-        # পোলিং স্টার্ট
         application.run_polling()
         
     except Exception as e:
         logger.error(f"❌ Bot Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
