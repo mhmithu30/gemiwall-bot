@@ -5,8 +5,7 @@ import json
 from datetime import datetime
 import logging
 import asyncio
-import os
-import time
+import re
 
 # ===== লগিং সেটআপ =====
 logging.basicConfig(
@@ -46,115 +45,170 @@ def test_proxy():
         logger.error(f"❌ Proxy Error: {e}")
         return False
 
-# ===== Playwright দিয়ে অফার সংগ্রহ =====
-async def fetch_offers_playwright():
-    """Playwright দিয়ে JavaScript রেন্ডার করা অফার সংগ্রহ"""
+# ===== GemiWall API থেকে অফার সংগ্রহ =====
+def fetch_offers_api():
+    """GemiWall-এর API থেকে সরাসরি অফার সংগ্রহ"""
+    
+    # API এন্ডপয়েন্টগুলি চেষ্টা করুন
+    api_endpoints = [
+        "https://gemiwall.com/api/offers",
+        "https://gemiwall.com/api/offers/list",
+        "https://gemiwall.com/api/offers?placementId=696cb426abfc445d01fefa53&userId=mrpoint8",
+        "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/api/offers",
+        "https://gemiwall.com/696cb426abfc445d01fefa53/api/offers",
+        "https://gemiwall.com/_next/data/.../offers.json",  # Next.js data
+    ]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://gemiwall.com/",
+        "Origin": "https://gemiwall.com",
+    }
+    
+    session = requests.Session()
+    if USE_PROXY:
+        session.proxies = {
+            'http': PROXY_URL,
+            'https': PROXY_URL
+        }
+    
+    offers = []
+    
+    try:
+        # 1. প্রথমে HTML থেকে Next.js ডাটা বের করার চেষ্টা
+        logger.info("🔄 Fetching page data...")
+        response = session.get(GEMIWALL_URL, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            html = response.text
+            
+            # Next.js ডাটা খুঁজুন (__NEXT_DATA__ স্ক্রিপ্ট)
+            next_data_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>([^<]+)</script>', html)
+            if next_data_match:
+                try:
+                    data = json.loads(next_data_match.group(1))
+                    # ডাটা থেকে অফার বের করুন
+                    if 'props' in data and 'pageProps' in data['props']:
+                        page_props = data['props']['pageProps']
+                        if 'offers' in page_props:
+                            offers = page_props['offers']
+                            logger.info(f"✅ Found {len(offers)} offers from __NEXT_DATA__")
+                            return offers
+                        elif 'data' in page_props and 'offers' in page_props['data']:
+                            offers = page_props['data']['offers']
+                            logger.info(f"✅ Found {len(offers)} offers from __NEXT_DATA__")
+                            return offers
+                except Exception as e:
+                    logger.warning(f"Next.js data parse error: {e}")
+            
+            # 2. JSON-LD ডাটা খুঁজুন
+            json_ld_match = re.search(r'<script type="application/ld\+json"[^>]*>([^<]+)</script>', html)
+            if json_ld_match:
+                try:
+                    data = json.loads(json_ld_match.group(1))
+                    if 'offers' in data:
+                        offers = data['offers']
+                        logger.info(f"✅ Found {len(offers)} offers from JSON-LD")
+                        return offers
+                except:
+                    pass
+            
+            # 3. HTML থেকে অফার পার্স করুন (সবচেয়ে সাধারণ)
+            offers = parse_offers_from_html(html)
+            if offers:
+                logger.info(f"✅ Found {len(offers)} offers from HTML parsing")
+                return offers
+        
+        # 4. API এন্ডপয়েন্ট চেষ্টা করুন
+        for api_url in api_endpoints:
+            try:
+                logger.info(f"🔄 Trying API: {api_url}")
+                response = session.get(api_url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        if 'offers' in data:
+                            offers = data['offers']
+                            logger.info(f"✅ Found {len(offers)} offers from API")
+                            return offers
+                        elif 'data' in data and 'offers' in data['data']:
+                            offers = data['data']['offers']
+                            logger.info(f"✅ Found {len(offers)} offers from API")
+                            return offers
+                    elif isinstance(data, list):
+                        offers = data
+                        logger.info(f"✅ Found {len(offers)} offers from API")
+                        return offers
+            except Exception as e:
+                continue
+        
+        return offers
+        
+    except Exception as e:
+        logger.error(f"❌ Fetch Error: {e}")
+        return []
+    finally:
+        session.close()
+
+def parse_offers_from_html(html):
+    """HTML থেকে অফার পার্স করুন"""
     offers = []
     try:
-        from playwright.async_api import async_playwright
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
         
-        logger.info("🔄 Launching browser...")
+        # বিভিন্ন প্যাটার্নে অফার খুঁজুন
+        # 1. অফার কার্ডগুলো খুঁজুন
+        offer_containers = soup.find_all(['div', 'li', 'article'], 
+            class_=lambda c: c and any(x in str(c).lower() for x in ['offer', 'item', 'card', 'task', 'reward'])
+        )
         
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-gpu',
-                    '--disable-features=IsolateOrigins,site-per-process'
-                ]
-            )
-            
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            
-            page = await context.new_page()
-            
-            logger.info("🔄 Loading GemiWall page...")
-            await page.goto(GEMIWALL_URL, wait_until='domcontentloaded', timeout=60000)
-            
-            # JavaScript লোডের জন্য অপেক্ষা
-            await page.wait_for_timeout(8000)
-            
-            # স্ক্রল ডাউন
-            logger.info("🔄 Scrolling for more offers...")
-            for _ in range(10):
-                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await page.wait_for_timeout(1500)
-            
-            # অফার খুঁজুন
-            logger.info("🔍 Searching for offers...")
-            
-            # Next.js অ্যাপের অফারগুলো খুঁজুন - বিভিন্ন সিলেক্টর
-            selectors = [
-                '.offer-item', '.offer-card', '.offer', 
-                '[class*="offer"]', '[class*="Offer"]',
-                '.task-item', '.reward-item',
-                '.border.rounded-xl', '.bg-white.rounded-xl'
-            ]
-            
-            offer_elements = []
-            for selector in selectors:
-                elements = await page.query_selector_all(selector)
-                if elements:
-                    offer_elements = elements
-                    logger.info(f"✅ Found {len(elements)} elements with selector: {selector}")
-                    break
-            
-            if not offer_elements:
-                # সব কার্ড খুঁজুন
-                offer_elements = await page.query_selector_all('.rounded-xl, .border')
-                logger.info(f"📦 Found {len(offer_elements)} card elements")
-            
-            # অফার পার্স করুন
-            for elem in offer_elements[:50]:
-                try:
-                    text = await elem.inner_text()
+        if not offer_containers:
+            offer_containers = soup.select('.offer-item, .offer-card, .offer, .item, .border, .rounded-xl')
+        
+        for container in offer_containers:
+            try:
+                text = container.get_text()
+                
+                # Points খুঁজুন
+                points_match = re.search(r'[\+\d.]+[Kk]?\s*(?:Points|Pts|pts|points)', text, re.I)
+                
+                if points_match:
+                    reward = points_match.group().strip()
                     
-                    # Points খুঁজুন
-                    import re
-                    points_match = re.search(r'[\+\d.]+[Kk]?\s*(?:Points|Pts|pts|points|Points)', text, re.I)
+                    # নাম খুঁজুন (পয়েন্টের আগের অংশ)
+                    name_part = text.split(reward)[0].strip()
+                    name = name_part.split('\n')[-1].strip() if name_part else "Unknown"
                     
-                    if points_match:
-                        reward = points_match.group().strip()
-                        name_part = text.split(reward)[0].strip()
-                        name = name_part.split('\n')[-1].strip() if name_part else text[:50]
-                        
-                        # লিংক
-                        link_elem = await elem.query_selector('a')
-                        link = await link_elem.get_attribute('href') if link_elem else '#'
-                        
-                        if name and len(name) > 2:
-                            offers.append({
-                                'name': name[:60],
-                                'reward': reward,
-                                'link': link,
-                                'description': 'Offer from GemiWall'
-                            })
-                except Exception as e:
-                    continue
-            
-            await browser.close()
-            
-            # ডুপ্লিকেট রিমুভ
-            seen = set()
-            unique_offers = []
-            for offer in offers:
-                key = offer['name'] + offer['reward']
-                if key not in seen:
-                    seen.add(key)
-                    unique_offers.append(offer)
-            
-            logger.info(f"📦 Total unique offers: {len(unique_offers)}")
-            return unique_offers
-            
+                    # লিংক
+                    link_elem = container.find('a')
+                    link = link_elem.get('href') if link_elem else '#'
+                    
+                    if name and len(name) > 2:
+                        offers.append({
+                            'name': name[:60],
+                            'reward': reward,
+                            'link': link,
+                            'description': 'Offer from GemiWall'
+                        })
+            except:
+                continue
+        
+        # ডুপ্লিকেট রিমুভ
+        seen = set()
+        unique_offers = []
+        for offer in offers:
+            key = offer['name'] + offer['reward']
+            if key not in seen:
+                seen.add(key)
+                unique_offers.append(offer)
+        
+        return unique_offers
+        
     except Exception as e:
-        logger.error(f"❌ Playwright Error: {e}")
+        logger.error(f"HTML parse error: {e}")
         return []
 
 # ===== ফাইল ম্যানেজমেন্ট =====
@@ -182,62 +236,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status - Bot status\n"
         "/refresh - Force refresh\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        f"📍 Proxy: {'ON' if USE_PROXY else 'OFF'}",
+        f"📍 Proxy: {'ON' if USE_PROXY else 'OFF'}\n"
+        "⚡ Engine: API + HTML",
         parse_mode="Markdown"
     )
 
 async def new_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Loading offers...\n⏳ This may take 20-30 seconds...")
+    msg = await update.message.reply_text("🔍 Fetching offers...")
     
-    try:
-        offers = await fetch_offers_playwright()
-        
-        if offers:
-            await msg.edit_text(f"✅ Found {len(offers)} offers!")
-            for offer in offers[:5]:
-                msg_text = (
-                    f"🎯 *{offer.get('name', 'Unknown')}*\n"
-                    f"💰 {offer.get('reward', 'N/A')}\n"
-                    f"🔗 [View]({offer.get('link', '#')})"
-                )
-                await update.message.reply_text(msg_text, parse_mode="Markdown", disable_web_page_preview=True)
-        else:
-            await msg.edit_text("❌ No offers found. Try /refresh or check later.")
-    except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)[:100]}")
+    offers = fetch_offers_api()
+    
+    if offers:
+        await msg.edit_text(f"✅ Found {len(offers)} offers!")
+        for offer in offers[:5]:
+            msg_text = (
+                f"🎯 *{offer.get('name', 'Unknown')}*\n"
+                f"💰 {offer.get('reward', 'N/A')}\n"
+                f"🔗 [View]({offer.get('link', '#')})"
+            )
+            await update.message.reply_text(msg_text, parse_mode="Markdown", disable_web_page_preview=True)
+    else:
+        await msg.edit_text("❌ No offers found. Try /refresh or check later.")
 
 async def all_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📋 Loading all offers...\n⏳ Please wait...")
+    msg = await update.message.reply_text("📋 Fetching all offers...")
     
-    try:
-        offers = await fetch_offers_playwright()
+    offers = fetch_offers_api()
+    
+    if offers:
+        await msg.edit_text(f"📋 Total Offers: {len(offers)}")
         
-        if offers:
-            await msg.edit_text(f"📋 Total Offers: {len(offers)}")
-            
-            for i in range(0, min(len(offers), 20), 5):
-                batch = offers[i:i+5]
-                msg_text = "*📋 Offers List*\n\n" + "\n\n".join([
-                    f"🎯 {o.get('name', 'Unknown')}\n💰 {o.get('reward', 'N/A')}" 
-                    for o in batch
-                ])
-                await update.message.reply_text(msg_text, parse_mode="Markdown")
-        else:
-            await msg.edit_text("❌ No offers available.")
-    except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)[:100]}")
+        for i in range(0, min(len(offers), 20), 5):
+            batch = offers[i:i+5]
+            msg_text = "*📋 Offers List*\n\n" + "\n\n".join([
+                f"🎯 {o.get('name', 'Unknown')}\n💰 {o.get('reward', 'N/A')}" 
+                for o in batch
+            ])
+            await update.message.reply_text(msg_text, parse_mode="Markdown")
+    else:
+        await msg.edit_text("❌ No offers available.")
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔄 Refreshing offers...\n⏳ Please wait...")
+    msg = await update.message.reply_text("🔄 Refreshing offers...")
+    offers = fetch_offers_api()
     
-    try:
-        offers = await fetch_offers_playwright()
-        if offers:
-            await msg.edit_text(f"✅ Refreshed! Found {len(offers)} offers")
-        else:
-            await msg.edit_text("❌ No offers found.")
-    except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)[:100]}")
+    if offers:
+        await msg.edit_text(f"✅ Refreshed! Found {len(offers)} offers")
+    else:
+        await msg.edit_text("❌ No offers found.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proxy_status = "🟢 ON" if USE_PROXY else "🔴 OFF"
@@ -248,7 +294,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🌐 Proxy: {proxy_status}\n"
         f"📍 IP: 68.132.64.59 (USA)\n"
         f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"⚡ Engine: Playwright",
+        f"⚡ Engine: API + HTML (No Browser)",
         parse_mode="Markdown"
     )
 
@@ -258,10 +304,10 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
         logger.info("⏰ Running scheduled check...")
         await context.bot.send_message(
             chat_id=CHAT_ID,
-            text="⏰ *Scheduled Check*\nChecking for new offers...\n⏳ Loading..."
+            text="⏰ *Scheduled Check*\nFetching offers..."
         )
         
-        offers = await fetch_offers_playwright()
+        offers = fetch_offers_api()
         
         if offers:
             data = load_offers()
@@ -292,35 +338,23 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
 
 # ===== মেইন ফাংশন =====
 def main():
-    logger.info("🚀 Starting GemiWall Bot...")
+    logger.info("🚀 Starting GemiWall Bot (API Mode)...")
     
     if USE_PROXY:
         test_proxy()
     
-    # Playwright ইনস্টল
-    try:
-        import subprocess
-        subprocess.run(['playwright', 'install', 'chromium'], check=True, capture_output=True)
-        logger.info("✅ Playwright Chromium installed")
-    except Exception as e:
-        logger.warning(f"⚠️ Playwright install: {e}")
-    
-    # Application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("new", new_offers))
     application.add_handler(CommandHandler("all", all_offers))
     application.add_handler(CommandHandler("refresh", refresh))
     application.add_handler(CommandHandler("status", status))
     
-    # Scheduler
     if application.job_queue:
         application.job_queue.run_repeating(scheduled_check, interval=1800, first=30)
         logger.info("✅ Scheduler started (30 min interval)")
     
-    # Webhook delete
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -329,12 +363,11 @@ def main():
     except Exception as e:
         logger.warning(f"Webhook delete: {e}")
     
-    logger.info("🤖 Bot is running!")
+    logger.info("🤖 Bot is running in API mode!")
     
-    # Polling - conflict এড়াতে
     application.run_polling(
-        poll_interval=0.3,
-        timeout=15,
+        poll_interval=0.5,
+        timeout=20,
         drop_pending_updates=True,
         allowed_updates=["message"]
     )
