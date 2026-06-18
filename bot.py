@@ -15,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== কনফিগারেশন =====
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"  # আপনার টোকেন দিন
-CHAT_ID = "YOUR_CHAT_ID"          # আপনার চ্যাট আইডি
+TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # আপনার টোকেন দিন
+CHAT_ID = "6881373105"          # আপনার চ্যাট আইডি
 GEMIWALL_URL = "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/"
 
 # ===== Socks5 প্রক্সি সেটিংস =====
