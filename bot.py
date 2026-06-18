@@ -14,8 +14,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== কনফিগারেশন =====
-TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"  # আপনার টোকেন দিন
-CHAT_ID = "6881373105"          # আপনার চ্যাট আইডি দিন
+TELEGRAM_TOKEN = "8620183702:AAFPVSoom1_PC2lPQzw3rldIzvn25TIJYw8"
+CHAT_ID = "6881373105"  # আপনার চ্যাট আইডি দিন
 GEMIWALL_URL = "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/"
 
 # ===== Socks5 প্রক্সি সেটিংস =====
@@ -91,11 +91,9 @@ def parse_html_offers(html_content):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # বিভিন্ন ক্লাস নাম ট্রাই করুন
         offer_elements = soup.find_all(['div', 'li'], class_=lambda c: c and ('offer' in c.lower() or 'item' in c.lower()))
         
         if not offer_elements:
-            # অন্য সিলেক্টর ট্রাই করুন
             offer_elements = soup.select('.offer-item, .offer-card, .offer, .item')
         
         for elem in offer_elements:
@@ -165,7 +163,6 @@ async def all_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     offers = fetch_offers_sync()
     
     if offers:
-        # প্রতি মেসেজে ৫টি করে অফার
         for i in range(0, min(len(offers), 15), 5):
             batch = offers[i:i+5]
             msg = "*📋 Offers List*\n\n" + "\n\n".join([
@@ -200,7 +197,6 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
         offers = fetch_offers_sync()
         
         if offers:
-            # চেক করুন নতুন অফার আছে কিনা
             data = load_offers()
             new_offers_list = []
             
@@ -224,42 +220,41 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Schedule error: {e}")
 
 # ===== মেইন ফাংশন =====
-def main():
+async def main():
     """বট শুরু করুন"""
     logger.info("🚀 Starting GemiWall Bot...")
     
-    # টোকেন চেক
     if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("❌ Please set your TELEGRAM_TOKEN in the code!")
         return
     
-    # প্রক্সি টেস্ট
     if USE_PROXY:
         test_proxy()
     
     try:
-        # Application তৈরি
         application = (
             Application.builder()
             .token(TELEGRAM_TOKEN)
             .build()
         )
         
-        # হ্যান্ডলার যোগ
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("new", new_offers))
         application.add_handler(CommandHandler("all", all_offers))
         application.add_handler(CommandHandler("status", status))
         
-        # শিডিউলার (প্রতি ৩০ মিনিট)
         if application.job_queue:
             application.job_queue.run_repeating(scheduled_check, interval=1800, first=10)
             logger.info("✅ Scheduler started (30 min interval)")
         else:
             logger.warning("⚠️ JobQueue not available")
         
+        # 🔥 Conflict Fix: Webhook ডিলিট করুন
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook cleared")
+        
         logger.info("🤖 Bot is running!")
-        application.run_polling()
+        await application.run_polling()
         
     except Exception as e:
         logger.error(f"❌ Bot Error: {e}")
@@ -267,4 +262,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
