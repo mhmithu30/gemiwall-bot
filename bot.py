@@ -5,8 +5,7 @@ import json
 from datetime import datetime
 import logging
 import asyncio
-import os
-from playwright.async_api import async_playwright
+import re
 
 # ===== লগিং সেটআপ =====
 logging.basicConfig(
@@ -46,132 +45,149 @@ def test_proxy():
         logger.error(f"❌ Proxy Error: {e}")
         return False
 
-# ===== Playwright দিয়ে অফার ফেচ =====
-async def fetch_offers_playwright():
-    """Playwright ব্যবহার করে JavaScript রেন্ডার করা অফার সংগ্রহ"""
+# ===== অফার ফেচ (API/HTML) =====
+def fetch_offers_sync():
+    """অফার সংগ্রহ করুন"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/html, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://gemiwall.com/",
+        "Origin": "https://gemiwall.com",
+    }
+    
+    session = requests.Session()
+    if USE_PROXY:
+        session.proxies = {
+            'http': PROXY_URL,
+            'https': PROXY_URL
+        }
+    
     offers = []
+    
     try:
-        async with async_playwright() as p:
-            # ব্রাউজার লঞ্চ
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            
-            # কনটেক্সট তৈরি (প্রক্সি সহ)
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            )
-            
-            # পেজ তৈরি
-            page = await context.new_page()
-            
-            # পেজ লোড হওয়া পর্যন্ত অপেক্ষা
-            logger.info("🔄 Loading page with JavaScript...")
-            await page.goto(GEMIWALL_URL, wait_until='networkidle', timeout=60000)
-            
-            # অফার লোড হওয়ার জন্য অপেক্ষা
-            await page.wait_for_timeout(5000)
-            
-            # স্ক্রল ডাউন (আরো অফার লোড করতে)
-            for _ in range(5):
-                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await page.wait_for_timeout(2000)
-            
-            # অফার এলিমেন্ট খুঁজে বের করা
-            logger.info("🔍 Parsing offers from page...")
-            
-            # বিভিন্ন সিলেক্টর ট্রাই করা
-            offer_selectors = [
-                '.offer-item',
-                '.offer-card',
-                '.offer',
-                '.item',
-                '.offer-box',
-                '.offer-list .item',
-                '.offers .offer',
-                '[class*="offer"]',
-                '[class*="Offer"]'
-            ]
-            
-            offers_data = []
-            for selector in offer_selectors:
-                elements = await page.query_selector_all(selector)
-                if elements:
-                    logger.info(f"✅ Found {len(elements)} offers with selector: {selector}")
-                    for elem in elements:
-                        try:
-                            # নাম
-                            name_elem = await elem.query_selector('.offer-name, .name, .title, h3, h4')
-                            name = await name_elem.inner_text() if name_elem else 'Unknown'
-                            
-                            # রিওয়ার্ড
-                            reward_elem = await elem.query_selector('.offer-reward, .reward, .points, .price')
-                            reward = await reward_elem.inner_text() if reward_elem else 'N/A'
-                            
-                            # লিংক
-                            link_elem = await elem.query_selector('a')
-                            link = await link_elem.get_attribute('href') if link_elem else '#'
-                            
-                            offers_data.append({
-                                'name': name.strip(),
-                                'reward': reward.strip(),
-                                'link': link,
-                                'description': 'Offer from GemiWall'
-                            })
-                        except Exception as e:
-                            continue
-                    
-                    if offers_data:
-                        break
-            
-            # যদি কোনো অফার না পাওয়া যায়, HTML থেকে পার্স করুন
-            if not offers_data:
-                logger.info("📄 Trying HTML parsing...")
-                html = await page.content()
-                offers_data = parse_html_offers(html)
-            
-            await browser.close()
-            
-            logger.info(f"📦 Total offers found: {len(offers_data)}")
-            return offers_data
+        logger.info(f"🔄 Fetching offers from GemiWall...")
+        
+        # প্রথমে JSON API চেষ্টা
+        api_urls = [
+            "https://gemiwall.com/api/offers",
+            "https://gemiwall.com/api/offers/list",
+            "https://gemiwall.com/696cb426abfc445d01fefa53/mrpoint8/api/offers",
+            f"{GEMIWALL_URL}?format=json",
+            f"{GEMIWALL_URL}/offers.json",
+        ]
+        
+        for api_url in api_urls:
+            try:
+                response = session.get(api_url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if data and isinstance(data, dict):
+                            if 'offers' in data:
+                                offers = data['offers']
+                                logger.info(f"✅ Found {len(offers)} offers via API: {api_url}")
+                                return offers
+                            elif 'data' in data and 'offers' in data['data']:
+                                offers = data['data']['offers']
+                                logger.info(f"✅ Found {len(offers)} offers via API: {api_url}")
+                                return offers
+                    except:
+                        pass
+            except:
+                continue
+        
+        # API কাজ না করলে HTML পার্সিং
+        logger.info("📄 API not found, parsing HTML...")
+        response = session.get(GEMIWALL_URL, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            offers = parse_html_offers(response.text)
+            logger.info(f"📦 Found {len(offers)} offers in HTML")
+        else:
+            logger.error(f"❌ HTTP Error {response.status_code}")
+            return []
             
     except Exception as e:
-        logger.error(f"❌ Playwright Error: {e}")
-        return []
+        logger.error(f"❌ Fetch Error: {e}")
+    finally:
+        session.close()
+    
+    return offers
 
 def parse_html_offers(html_content):
-    """HTML পার্সিং (ব্যাকআপ)"""
+    """HTML থেকে অফার পার্স করুন"""
     offers = []
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # সব offer এলিমেন্ট খুঁজুন
+        # স্ক্রিপ্ট ট্যাগ থেকে JSON ডাটা খুঁজুন
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and 'offers' in script.string:
+                try:
+                    import re
+                    json_match = re.search(r'\{.*"offers".*\}', script.string, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group())
+                        if 'offers' in data:
+                            offers = data['offers']
+                            logger.info(f"✅ Found {len(offers)} offers in script")
+                            return offers
+                except:
+                    pass
+        
+        # HTML এলিমেন্ট থেকে পার্স
         offer_elements = soup.find_all(['div', 'li', 'article'], 
-            class_=lambda c: c and any(x in c.lower() for x in ['offer', 'item', 'card', 'box'])
+            class_=lambda c: c and any(x in str(c).lower() for x in ['offer', 'item', 'card', 'box'])
         )
         
+        if not offer_elements:
+            # অন্য সিলেক্টর
+            offer_elements = soup.select('.offer-item, .offer-card, .offer, .item, .offer-box, [class*="offer"]')
+        
         for elem in offer_elements:
-            name_elem = elem.find(['h3', 'h4', 'div', 'span'], 
-                class_=lambda c: c and any(x in c.lower() for x in ['name', 'title'])
+            name_elem = elem.find(['h3', 'h4', 'div', 'span', 'a'], 
+                class_=lambda c: c and any(x in str(c).lower() for x in ['name', 'title'])
             )
+            if not name_elem:
+                name_elem = elem.find(['h3', 'h4', 'strong', 'b'])
+            
             reward_elem = elem.find(['span', 'div'], 
-                class_=lambda c: c and any(x in c.lower() for x in ['reward', 'points', 'price'])
+                class_=lambda c: c and any(x in str(c).lower() for x in ['reward', 'points', 'price', 'coin'])
             )
+            if not reward_elem:
+                reward_elem = elem.find(['span', 'div'], string=re.compile(r'[\d.]+[Kk]? Points|[\d.]+[Kk]? Pts', re.I))
+            
             link_elem = elem.find('a')
             
-            if name_elem or reward_elem:
-                offer = {
-                    'name': name_elem.text.strip() if name_elem else 'Unknown Offer',
-                    'reward': reward_elem.text.strip() if reward_elem else 'N/A',
+            name = name_elem.text.strip() if name_elem else None
+            reward = reward_elem.text.strip() if reward_elem else None
+            
+            if name and reward:
+                offers.append({
+                    'name': name,
+                    'reward': reward,
                     'link': link_elem.get('href') if link_elem else '#',
                     'description': 'Offer from GemiWall'
-                }
-                offers.append(offer)
+                })
+        
+        # যদি নাম্বার পাওয়া না যায়, সব লিংক থেকে সংগ্রহ করুন
+        if not offers:
+            links = soup.find_all('a', href=re.compile(r'/offer/|/task/|/reward/'))
+            for link in links[:30]:
+                text = link.text.strip()
+                if text and len(text) > 5:
+                    offers.append({
+                        'name': text[:50],
+                        'reward': 'Check offer',
+                        'link': link.get('href', '#'),
+                        'description': 'Offer from GemiWall'
+                    })
         
         return offers
+        
     except Exception as e:
         logger.error(f"⚠️ HTML Parse Error: {e}")
         return []
@@ -195,7 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *GemiWall Scraper Bot*\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "🟢 *Active Commands:*\n"
+        "🟢 *Commands:*\n"
         "/new - Check new offers\n"
         "/all - Get all offers\n"
         "/status - Bot status\n"
@@ -205,40 +221,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def new_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Checking new offers (using JavaScript rendering)...")
-    offers = await fetch_offers_playwright()
+    msg = await update.message.reply_text("🔍 Checking new offers...")
+    offers = fetch_offers_sync()
     
     if offers:
+        await msg.edit_text(f"✅ Found {len(offers)} offers! Showing first 5:")
         for offer in offers[:5]:
-            msg = (
-                f"🎯 *{offer.get('name')}*\n"
-                f"💰 Reward: {offer.get('reward')}\n"
-                f"🔗 [View Offer]({offer.get('link')})"
+            msg_text = (
+                f"🎯 *{offer.get('name', 'Unknown')}*\n"
+                f"💰 Reward: {offer.get('reward', 'N/A')}\n"
+                f"🔗 [View Offer]({offer.get('link', '#')})"
             )
-            await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
-        if len(offers) > 5:
-            await update.message.reply_text(f"📊 Showing 5 of {len(offers)} total offers. Use /all to see more.")
+            await update.message.reply_text(msg_text, parse_mode="Markdown", disable_web_page_preview=True)
     else:
-        await update.message.reply_text("❌ No offers found. Please try again later.")
+        await msg.edit_text("❌ No offers found. Please try again later.")
 
 async def all_offers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📋 Fetching all offers (using JavaScript rendering)...")
-    offers = await fetch_offers_playwright()
+    msg = await update.message.reply_text("📋 Fetching all offers...")
+    offers = fetch_offers_sync()
     
     if offers:
-        # প্রতি মেসেজে ৫টি করে অফার
+        await msg.edit_text(f"📋 Total Offers: {len(offers)}")
+        
+        # প্রতি মেসেজে ৫টি করে
         for i in range(0, min(len(offers), 20), 5):
             batch = offers[i:i+5]
-            msg = "*📋 Offers List*\n\n" + "\n\n".join([
-                f"🎯 {o.get('name')}\n💰 {o.get('reward')}" 
+            msg_text = "*📋 Offers List*\n\n" + "\n\n".join([
+                f"🎯 {o.get('name', 'Unknown')}\n💰 {o.get('reward', 'N/A')}" 
                 for o in batch
             ])
-            await update.message.reply_text(msg, parse_mode="Markdown")
-        
-        if len(offers) > 20:
-            await update.message.reply_text(f"📊 Showing 20 of {len(offers)} total offers.")
+            await update.message.reply_text(msg_text, parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ No offers available.")
+        await msg.edit_text("❌ No offers available.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proxy_status = "🟢 ON" if USE_PROXY else "🔴 OFF"
@@ -249,8 +263,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🌐 Proxy: {proxy_status}\n"
         f"📍 IP: 68.132.64.59 (USA)\n"
         f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"📦 Offers: Check /new or /all\n"
-        f"⚡ Engine: Playwright (JavaScript)",
+        f"⚡ Engine: Requests + BeautifulSoup",
         parse_mode="Markdown"
     )
 
@@ -261,7 +274,7 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
             chat_id=CHAT_ID, 
             text="⏰ *Scheduled Check*\nChecking for new offers..."
         )
-        offers = await fetch_offers_playwright()
+        offers = fetch_offers_sync()
         
         if offers:
             data = load_offers()
@@ -280,7 +293,7 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
                     text=f"🆕 *New Offers Found!*\nTotal: {len(new_offers_list)} new offers"
                 )
                 for offer in new_offers_list[:3]:
-                    msg = f"🎯 {offer.get('name')}\n💰 {offer.get('reward')}"
+                    msg = f"🎯 {offer.get('name', 'Unknown')}\n💰 {offer.get('reward', 'N/A')}"
                     await context.bot.send_message(chat_id=CHAT_ID, text=msg)
             else:
                 await context.bot.send_message(chat_id=CHAT_ID, text="✅ No new offers found.")
@@ -292,18 +305,10 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
 
 # ===== মেইন ফাংশন =====
 def main():
-    logger.info("🚀 Starting GemiWall Bot with Playwright...")
+    logger.info("🚀 Starting GemiWall Bot...")
     
     if USE_PROXY:
         test_proxy()
-    
-    # Playwright ব্রাউজার ইনস্টল করুন (প্রথমবার)
-    try:
-        import subprocess
-        subprocess.run(['playwright', 'install', 'chromium'], check=True)
-        logger.info("✅ Playwright Chromium installed")
-    except Exception as e:
-        logger.warning(f"⚠️ Playwright install warning: {e}")
     
     application = (
         Application.builder()
@@ -328,7 +333,7 @@ def main():
     except Exception as e:
         logger.warning(f"Webhook delete warning: {e}")
     
-    logger.info("🤖 Bot is running with Playwright!")
+    logger.info("🤖 Bot is running!")
     application.run_polling(
         poll_interval=1.0,
         timeout=30,
