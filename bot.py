@@ -219,9 +219,9 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Schedule error: {e}")
 
-# ===== মেইন ফাংশন =====
-async def main():
-    """বট শুরু করুন"""
+# ===== মেইন ফাংশন (সঠিকভাবে) =====
+def main():
+    """বট শুরু করুন - সিঙ্ক্রোনাস মেইন"""
     logger.info("🚀 Starting GemiWall Bot...")
     
     if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
@@ -231,35 +231,38 @@ async def main():
     if USE_PROXY:
         test_proxy()
     
-    try:
-        application = (
-            Application.builder()
-            .token(TELEGRAM_TOKEN)
-            .build()
-        )
-        
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("new", new_offers))
-        application.add_handler(CommandHandler("all", all_offers))
-        application.add_handler(CommandHandler("status", status))
-        
-        if application.job_queue:
-            application.job_queue.run_repeating(scheduled_check, interval=1800, first=10)
-            logger.info("✅ Scheduler started (30 min interval)")
-        else:
-            logger.warning("⚠️ JobQueue not available")
-        
-        # 🔥 Conflict Fix: Webhook ডিলিট করুন
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Webhook cleared")
-        
-        logger.info("🤖 Bot is running!")
-        await application.run_polling()
-        
-    except Exception as e:
-        logger.error(f"❌ Bot Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Application তৈরি
+    application = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .build()
+    )
+    
+    # হ্যান্ডলার যোগ
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("new", new_offers))
+    application.add_handler(CommandHandler("all", all_offers))
+    application.add_handler(CommandHandler("status", status))
+    
+    # শিডিউলার
+    if application.job_queue:
+        application.job_queue.run_repeating(scheduled_check, interval=1800, first=10)
+        logger.info("✅ Scheduler started (30 min interval)")
+    else:
+        logger.warning("⚠️ JobQueue not available")
+    
+    # Webhook ডিলিট করুন (Conflict ফিক্স)
+    # run_polling এর আগে সিঙ্ক্রোনাসভাবে করা
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+    logger.info("✅ Webhook cleared")
+    
+    logger.info("🤖 Bot is running!")
+    
+    # run_polling সিঙ্ক্রোনাসভাবে চালান
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
